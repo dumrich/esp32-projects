@@ -22,6 +22,7 @@ Design Plan (courtesy of Mr. Mirah):
 #include "esp_wifi.h"
 #include "esp_err.h"
 #include "esp_log.h"
+#include <ctype.h>
 
 #include "lwip/err.h"
 #include "lwip/sockets.h"
@@ -40,7 +41,7 @@ Design Plan (courtesy of Mr. Mirah):
 
 #define LEDC_TIMER LEDC_TIMER_0
 #define LEDC_MODE LEDC_LOW_SPEED_MODE
-#define LEDC_OUTPUT_IO (12) // Output GPIO
+#define LEDC_OUTPUT_IO 5 // Output GPIO
 #define LEDC_DUTY_RES LEDC_TIMER_8_BIT
 #define LEDC_FREQUENCY (1000)
 
@@ -178,8 +179,16 @@ esp_err_t connect_wifi() {
 }
 
 int parse_response(char* data, size_t data_len) {
-    printf("%.*s", data_len, data);
-    return 20;
+    int total = 0;
+    int multiplier = 1;
+    for(int i = 15; i > 12; i--) {
+        unsigned char dig = data[i];
+        if(isdigit(dig)) {
+            total += (dig - '0')*multiplier;
+            multiplier *= 10;
+        }
+    }
+    return total;
 }
 
 esp_err_t _http_event_handler(esp_http_client_event_t *evt) {
@@ -200,7 +209,8 @@ esp_err_t _http_event_handler(esp_http_client_event_t *evt) {
             ESP_LOGI(TAG, "HTTP_EVENT_ON_DATA, len=%d", evt->data_len);
             if (!esp_http_client_is_chunked_response(evt->client)) {
                 // Write out data
-                int val = parse_response((char*)evt->data);
+                int val = parse_response((char*)evt->data, evt->data_len);
+                printf("%d", val);
                 setDuty(val);
             }
             break;
@@ -210,13 +220,16 @@ esp_err_t _http_event_handler(esp_http_client_event_t *evt) {
         case HTTP_EVENT_DISCONNECTED:
             ESP_LOGI(TAG, "HTTP_EVENT_DISCONNECTED");
             break;
+        case HTTP_EVENT_REDIRECT:
+            ESP_LOGI(TAG, "HTTP_EVENT_REDIRECTED");
+            break;
     }
     return ESP_OK;
 }
 
 void http_get_task(void *pvParameters) {
     esp_http_client_config_t config = {
-        .url = "http://httpbin.org/get",
+        .url = "http://192.168.1.239:8080/number",
         .method = HTTP_METHOD_GET,
         .event_handler = _http_event_handler,
     };
@@ -228,13 +241,12 @@ void http_get_task(void *pvParameters) {
         esp_err_t err = esp_http_client_perform(client);
 
         if (err == ESP_OK) {
-            ESP_LOGI(TAG, "HTTP GET Status = %d, content_length = %d",
-                    esp_http_client_get_status_code(client),
-                    esp_http_client_get_content_length(client));
+            ESP_LOGI(TAG, "HTTP request successful");
         } else {
             ESP_LOGE(TAG, "HTTP GET request failed: %s", esp_err_to_name(err));
             return;
         }
+        vTaskDelay(pdMS_TO_TICKS(25));
     }
 
     // Cleanup
@@ -264,10 +276,5 @@ void app_main() {
 		ESP_LOGI(TAG, "Failed to associate to AP, dying...");
 		return;
 	}
-    status = fetch_api();
-    if(TCP_SUCCESS != status) {
-        ESP_LOGI(TAG, "Failed to make TCP request, dying...");
-        return;
-    }
+    xTaskCreate(&http_get_task, "http_get_task", 8192, NULL, 5, NULL);
 }
-
